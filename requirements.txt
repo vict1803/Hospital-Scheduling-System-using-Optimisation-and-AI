@@ -1,0 +1,12 @@
+# Core
+ortools
+pandas
+statsmodels
+scikit-learn
+
+# Web application (proposed)
+django
+psycopg2-binary
+
+# Testing
+pytest
