@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Environment and secrets
+.env
+*.env
+
+# Django
+db.sqlite3
+staticfiles/
+
+# Data (keep only small sample files in git)
+data/raw/
+*.csv.gz
+
+# OS and editor
+.DS_Store
+.vscode/
+.idea/
