@@ -11,9 +11,6 @@ from datetime import datetime, timedelta
 
 import pytest
 
-# =====================================================================================
-# SETTINGS  (edit these to match your app)
-# =====================================================================================
 BASE_URL = os.getenv("APP_URL", "http://localhost:8000")
 ADMIN = (os.getenv("APP_ADMIN_USER", "admin"), os.getenv("APP_ADMIN_PASS", "admin"))
 STAFF = (os.getenv("APP_STAFF_USER", "staff"), os.getenv("APP_STAFF_PASS", "staff"))
@@ -48,9 +45,6 @@ S = {  # data-testid placeholders
     "t_hol_na": "[data-testid=holiday-unavailable]", "t_err": "[data-testid=chart-error]",
 }
 
-# =====================================================================================
-# Tiny in-file helpers (browser steps + CSV writing). No application code is used.
-# =====================================================================================
 START = datetime(2026, 1, 5)             # a Monday
 
 
