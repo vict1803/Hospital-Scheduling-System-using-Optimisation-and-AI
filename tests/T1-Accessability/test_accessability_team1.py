@@ -1,14 +1,16 @@
 import importlib.util
 import os
 import sys
+from collections.abc import Mapping
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 # ==========================================================
 # Django setup 
 # ==========================================================
-REPO_ROOT = Path(__file__).resolve().parent  # adjust parents[n] if this file lives in tests/
-sys.path.insert(0, str(REPO_ROOT / "src" / "webapp"))  # adjust if your layout differs
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 APP_SETTINGS = os.environ.get("DJANGO_SETTINGS_MODULE", "webapp.settings")
 
@@ -68,25 +70,20 @@ SESSION_KEY = "_auth_user_id"
 # ==========================================================
 # Fixtures and helpers
 # ==========================================================
-def require_routes():
-    """Fail the running test if any *_URL constant above does not resolve."""
+def require_routes(url):
+    """Fail the running test if the requested URL does not resolve."""
     from django.urls import resolve
 
-    urls = [v for k, v in globals().items() if k.endswith("_URL") and isinstance(v, str)]
-    missing = []
-    for url in urls:
-        try:
-            resolve(url)
-        except Exception:  # Resolver404, or the urlconf module not existing yet
-            missing.append(url)
-    if missing:
-        pytest.fail(f"Not implemented: no route for {missing}", pytrace=False)
+    try:
+        resolve(url)
+    except Exception:  # Resolver404, or the urlconf module not existing yet
+        pytest.fail(f"Not implemented: no route for [{url}]", pytrace=False)
 
 
 @pytest.fixture
 def client():
     """
-    Django test client that fails with 'Not implemented' if the routes are missing.
+    Django test client that fails with 'Not implemented' if the requested route is missing.
 
     The check runs on the first request, i.e. inside the test body, so pytest
     reports FAILED instead of a fixture-setup ERROR.
@@ -95,7 +92,7 @@ def client():
 
     class GuardedClient(Client):
         def request(self, **request):
-            require_routes()
+            require_routes(request["PATH_INFO"])
             return super().request(**request)
 
     return GuardedClient()
@@ -134,7 +131,7 @@ def get_form(response):
 # R01 - Secure Role-Based Login
 # ==========================================================
 
-def test_t1_01_valid_admin_account(client, login):
+def test_t1_r01_01_valid_admin_account(client, login):
     """Login using a valid admin account: admin logs in and reaches the admin interface."""
     response = login("admin")
 
@@ -142,8 +139,7 @@ def test_t1_01_valid_admin_account(client, login):
     assert response["Location"] == ADMIN_DASHBOARD_URL
     assert SESSION_KEY in client.session
 
-
-def test_t1_02_valid_staff_account(client, login):
+def test_t1_r01_02_valid_staff_account(client, login):
     """Login using a valid staff account: staff reaches the staff interface."""
     response = login("staff")
 
@@ -151,8 +147,7 @@ def test_t1_02_valid_staff_account(client, login):
     assert response["Location"] == STAFF_SCHEDULE_URL
     assert SESSION_KEY in client.session
 
-
-def test_t1_03_invalid_credentials(client):
+def test_t1_r01_03_invalid_credentials(client):
     """Invalid credentials are rejected and an error is shown on the form."""
     response = client.post(
         LOGIN_URL,
@@ -163,8 +158,7 @@ def test_t1_03_invalid_credentials(client):
     assert SESSION_KEY not in client.session
     assert get_form(response).errors
 
-
-def test_t1_04_logout(client, login):
+def test_t1_r01_04_logout(client, login):
     """Logout logs the user out and returns them to the login page."""
     login("staff")
     assert SESSION_KEY in client.session
@@ -175,16 +169,14 @@ def test_t1_04_logout(client, login):
     assert response["Location"].split("?")[0] == LOGIN_URL
     assert SESSION_KEY not in client.session
 
-
-def test_t1_05_correct_username_and_password(client, login):
+def test_t1_r01_05_correct_username_and_password(client, login):
     """Correct username and password are accepted."""
     response = login("admin")
 
     assert response.status_code == 302
     assert SESSION_KEY in client.session
 
-
-def test_t1_06_correct_username_incorrect_password(client, users):
+def test_t1_r01_06_correct_username_incorrect_password(client, users):
     """Correct username with incorrect password is rejected."""
     response = client.post(
         LOGIN_URL,
@@ -195,8 +187,7 @@ def test_t1_06_correct_username_incorrect_password(client, users):
     assert SESSION_KEY not in client.session
     assert get_form(response).errors
 
-
-def test_t1_07_incorrect_username_correct_password(client, users):
+def test_t1_r01_07_incorrect_username_correct_password(client, users):
     """Incorrect username with correct password is rejected."""
     response = client.post(
         LOGIN_URL,
@@ -207,18 +198,15 @@ def test_t1_07_incorrect_username_correct_password(client, users):
     assert SESSION_KEY not in client.session
     assert get_form(response).errors
 
-
 @pytest.mark.skip(reason="Deferred: needs Playwright/Selenium to click the rendered Login button.")
-def test_t1_08_login_button():
+def test_t1_r01_08_login_button():
     """Submitting username and password via the Login button executes the login process."""
 
-
 @pytest.mark.skip(reason="Deferred: needs Playwright/Selenium to press Enter in the rendered form.")
-def test_t1_09_enter_key_after_credentials():
+def test_t1_r01_09_enter_key_after_credentials():
     """Pressing Enter after credentials triggers login."""
 
-
-def test_t1_10_session_remains_active(client, login):
+def test_t1_r01_10_session_remains_active(client, login):
     """An authenticated session remains active while navigating protected pages."""
     login("staff")
 
@@ -229,8 +217,7 @@ def test_t1_10_session_remains_active(client, login):
     assert second.status_code == 200
     assert SESSION_KEY in client.session
 
-
-def test_t1_11_logout_terminates_session(client, login):
+def test_t1_r01_11_logout_terminates_session(client, login):
     """Logout properly terminates the session."""
     login("staff")
     assert SESSION_KEY in client.session
@@ -239,8 +226,7 @@ def test_t1_11_logout_terminates_session(client, login):
 
     assert SESSION_KEY not in client.session
 
-
-def test_t1_12_empty_username_and_password(client):
+def test_t1_r01_12_empty_username_and_password(client):
     """Empty username and password submission is rejected with required-field errors."""
     response = client.post(LOGIN_URL, {})
 
@@ -250,8 +236,7 @@ def test_t1_12_empty_username_and_password(client):
     assert "username" in errors
     assert "password" in errors
 
-
-def test_t1_13_username_only(client, users):
+def test_t1_r01_13_username_only(client, users):
     """A username-only submission is rejected with a password error."""
     response = client.post(LOGIN_URL, {"username": users["staff"][0]})
 
@@ -259,8 +244,7 @@ def test_t1_13_username_only(client, users):
     assert SESSION_KEY not in client.session
     assert "password" in get_form(response).errors
 
-
-def test_t1_14_password_only(client, users):
+def test_t1_r01_14_password_only(client, users):
     """A password-only submission is rejected with a username error."""
     response = client.post(LOGIN_URL, {"password": users["staff"][1]})
 
@@ -268,8 +252,7 @@ def test_t1_14_password_only(client, users):
     assert SESSION_KEY not in client.session
     assert "username" in get_form(response).errors
 
-
-def test_t1_15_leading_trailing_spaces(client, users):
+def test_t1_r01_15_leading_trailing_spaces(client, users):
     """Leading/trailing spaces in username are trimmed and authenticate successfully."""
     # The RTM leaves whitespace handling open; this test assumes trimming is intended.
     username, password = users["staff"]
@@ -282,8 +265,7 @@ def test_t1_15_leading_trailing_spaces(client, users):
     assert response.status_code == 302
     assert SESSION_KEY in client.session
 
-
-def test_t1_16_extremely_long_credentials(client):
+def test_t1_r01_16_extremely_long_credentials(client):
     """Extremely long username/password input is handled safely."""
     response = client.post(
         LOGIN_URL,
@@ -293,8 +275,7 @@ def test_t1_16_extremely_long_credentials(client):
     assert response.status_code in (200, 400, 413)
     assert SESSION_KEY not in client.session
 
-
-def test_t1_17_special_characters(client):
+def test_t1_r01_17_special_characters(client):
     """Special characters are processed safely and cannot bypass authentication."""
     response = client.post(
         LOGIN_URL,
@@ -304,8 +285,7 @@ def test_t1_17_special_characters(client):
     assert response.status_code in (200, 400)
     assert SESSION_KEY not in client.session
 
-
-def test_t1_18_repeated_failed_logins(client):
+def test_t1_r01_18_repeated_failed_logins(client):
     """
     Repeated failed credentials do not grant access.
 
@@ -320,8 +300,7 @@ def test_t1_18_repeated_failed_logins(client):
         assert response.status_code in (200, 429)
         assert SESSION_KEY not in client.session
 
-
-def test_t1_19_staff_cannot_open_admin_dashboard(client, login):
+def test_t1_r01_19_staff_cannot_open_admin_dashboard(client, login):
     """Staff access to the admin dashboard URL is denied."""
     assert login("staff").status_code == 302
 
@@ -329,8 +308,7 @@ def test_t1_19_staff_cannot_open_admin_dashboard(client, login):
 
     assert response.status_code == 403
 
-
-def test_t1_20_staff_admin_only_functions(client, login):
+def test_t1_r01_20_staff_admin_only_functions(client, login):
     """Staff cannot perform administrative operations."""
     assert login("staff").status_code == 302
 
@@ -338,8 +316,7 @@ def test_t1_20_staff_admin_only_functions(client, login):
 
     assert response.status_code == 403
 
-
-def test_t1_21_admin_permissions(client, login):
+def test_t1_r01_21_admin_permissions(client, login):
     """Admin permissions are recognised on the admin dashboard."""
     assert login("admin").status_code == 302
 
@@ -347,8 +324,7 @@ def test_t1_21_admin_permissions(client, login):
 
     assert response.status_code == 200
 
-
-def test_t1_22_logout_revisit_protected_page(client, login):
+def test_t1_r01_22_logout_revisit_protected_page(client, login):
     """A logged-out user revisiting a protected page must authenticate again."""
     login("staff")
     client.post(LOGOUT_URL)
@@ -358,8 +334,7 @@ def test_t1_22_logout_revisit_protected_page(client, login):
     assert response.status_code == 302
     assert response["Location"].split("?")[0] == LOGIN_URL
 
-
-def test_t1_23_expired_session(client, login):
+def test_t1_r01_23_expired_session(client, login):
     """An expired session requires reauthentication."""
     login("staff")
 
@@ -373,3 +348,415 @@ def test_t1_23_expired_session(client, login):
 
     assert response.status_code == 302
     assert response["Location"].split("?")[0] == LOGIN_URL
+
+
+# ==========================================================
+# R02 - Admin Dashboard
+# ==========================================================
+
+SCHEDULE_ROW_FIELDS = {"staff_id", "ward_id", "shift_date", "shift_name"}
+
+@pytest.fixture
+def dashboard_test_data_factory(db):
+    """Seed dashboard records and return expected rows plus fixture identifiers.
+
+    The result includes schedule_rows, ward_ids, empty_ward_id, week_start,
+    month_start, and period_without_roster.
+    """
+    def _create_dashboard_test_data(row_count=6):
+        from webapp.testing import create_dashboard_test_data
+
+        return create_dashboard_test_data(row_count=row_count)
+
+    return _create_dashboard_test_data
+
+def _login_admin(login):
+    login_response = login("admin")
+    assert login_response.status_code == 302
+
+def _admin_dashboard(client, login):
+    _login_admin(login)
+    return client.get(ADMIN_DASHBOARD_URL)
+
+def _admin_dashboard_with_data(client, login, dashboard_test_data_factory, row_count=6):
+    _login_admin(login)
+    test_data = dashboard_test_data_factory(row_count=row_count)
+    response = client.get(ADMIN_DASHBOARD_URL)
+    return test_data, response
+
+def _schedule_rows(response):
+    assert response.context is not None, "Dashboard response must expose its template context."
+    assert "schedule_rows" in response.context
+    rows = response.context["schedule_rows"]
+    assert isinstance(rows, list)
+    for row in rows:
+        assert isinstance(row, Mapping)
+        assert SCHEDULE_ROW_FIELDS <= row.keys()
+    return rows
+
+def _normalized_rows(rows):
+    return sorted(
+        (
+            str(row["staff_id"]),
+            str(row["ward_id"]),
+            _as_date(row["shift_date"]).isoformat(),
+            str(row["shift_name"]),
+        )
+        for row in rows
+    )
+
+def _as_date(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+def _rows_for_period(rows, period_start, period_type):
+    period_start = _as_date(period_start)
+    if period_type == "week":
+        return [
+            row for row in rows
+            if period_start <= _as_date(row["shift_date"]) < period_start + timedelta(days=7)
+        ]
+    return [
+        row for row in rows
+        if (_as_date(row["shift_date"]).year, _as_date(row["shift_date"]).month)
+        == (period_start.year, period_start.month)
+    ]
+
+def test_t1_r02_24_admin_dashboard_after_login(client, login):
+    """Admin opens the dashboard after logging in."""
+    response = _admin_dashboard(client, login)
+
+    assert response.status_code == 200
+
+def test_t1_r02_25_overall_staff_schedule(client, login, dashboard_test_data_factory):
+    """Admin views the overall staff schedule across relevant wards."""
+    test_data, response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+
+    assert response.status_code == 200
+    assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(
+        test_data["schedule_rows"]
+    )
+
+def test_t1_r02_26_schedule_for_selected_period(client, login, dashboard_test_data_factory):
+    """Admin views schedules for a selected period."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    period_start = _as_date(test_data["week_start"])
+
+    response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"period_start": period_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    rows = _schedule_rows(response)
+    assert _normalized_rows(rows) == _normalized_rows(
+        _rows_for_period(test_data["schedule_rows"], period_start, "week")
+    )
+
+def test_t1_r02_27_schedule_for_another_ward(client, login, dashboard_test_data_factory):
+    """Admin navigates to another ward."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    selected_ward = test_data["ward_ids"][1]
+
+    response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": selected_ward})
+
+    assert response.status_code == 200
+    assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(
+        [row for row in test_data["schedule_rows"] if row["ward_id"] == selected_ward]
+    )
+
+def test_t1_r02_28_open_dashboard_from_navigation(client, login):
+    """Open the dashboard from the navigation menu."""
+    response = _admin_dashboard(client, login)
+
+    assert response.status_code == 200
+    assert f'href="{ADMIN_DASHBOARD_URL}"'.encode() in response.content
+
+def test_t1_r02_29_select_ward(client, login, dashboard_test_data_factory):
+    """Selecting a ward displays that ward on the dashboard."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    selected_ward = test_data["ward_ids"][0]
+
+    response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": selected_ward})
+
+    assert response.status_code == 200
+    assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(
+        [row for row in test_data["schedule_rows"] if row["ward_id"] == selected_ward]
+    )
+
+def test_t1_r02_30_select_scheduling_period(client, login, dashboard_test_data_factory):
+    """Selecting a different scheduling period updates the schedule."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    period_start = _as_date(test_data["month_start"])
+
+    response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"period_start": period_start.isoformat(), "period_type": "month"},
+    )
+
+    assert response.status_code == 200
+    assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(
+        _rows_for_period(test_data["schedule_rows"], period_start, "month")
+    )
+
+def test_t1_r02_31_navigate_between_wards(client, login, dashboard_test_data_factory):
+    """Navigating between wards updates the selected ward and schedule."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    ward_ids = test_data["ward_ids"]
+
+    first_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[0]})
+    second_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[1]})
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert _normalized_rows(_schedule_rows(first_response)) == _normalized_rows(
+        [row for row in test_data["schedule_rows"] if row["ward_id"] == ward_ids[0]]
+    )
+    assert _normalized_rows(_schedule_rows(second_response)) == _normalized_rows(
+        [row for row in test_data["schedule_rows"] if row["ward_id"] == ward_ids[1]]
+    )
+
+def test_t1_r02_32_navigate_between_periods(client, login, dashboard_test_data_factory):
+    """Navigating between weeks or months updates the schedule."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    week_start = _as_date(test_data["week_start"])
+    month_start = _as_date(test_data["month_start"])
+
+    week_response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"period_start": week_start.isoformat(), "period_type": "week"},
+    )
+    month_response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"period_start": month_start.isoformat(), "period_type": "month"},
+    )
+
+    assert week_response.status_code == 200
+    assert month_response.status_code == 200
+    assert _normalized_rows(_schedule_rows(week_response)) == _normalized_rows(
+        _rows_for_period(test_data["schedule_rows"], week_start, "week")
+    )
+    assert _normalized_rows(_schedule_rows(month_response)) == _normalized_rows(
+        _rows_for_period(test_data["schedule_rows"], month_start, "month")
+    )
+
+def test_t1_r02_33_refresh_dashboard(client, login, dashboard_test_data_factory):
+    """Refreshing the dashboard preserves data integrity."""
+    test_data, first_response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    refreshed_response = client.get(ADMIN_DASHBOARD_URL)
+
+    assert refreshed_response.status_code == 200
+    expected_rows = _normalized_rows(test_data["schedule_rows"])
+    assert _normalized_rows(_schedule_rows(first_response)) == expected_rows
+    assert _normalized_rows(_schedule_rows(refreshed_response)) == expected_rows
+
+def test_t1_r02_34_ward_with_no_assigned_staff(client, login, dashboard_test_data_factory):
+    """Selecting a ward with no assigned staff displays an empty state."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+
+    response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"ward_id": test_data["empty_ward_id"]},
+    )
+
+    assert response.status_code == 200
+    assert _schedule_rows(response) == []
+
+def test_t1_r02_35_period_without_roster(client, login, dashboard_test_data_factory):
+    """Selecting a period without a roster displays an appropriate empty state."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+
+    response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {
+            "period_start": test_data["period_without_roster"],
+            "period_type": "week",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _schedule_rows(response) == []
+
+def test_t1_r02_36_invalid_or_unavailable_period(client, login):
+    """Selecting an invalid or unavailable period does not show incorrect data."""
+    _admin_dashboard(client, login)
+
+    response = client.get(
+        ADMIN_DASHBOARD_URL,
+        {"period_start": "not-a-date", "period_type": "week"},
+    )
+
+    assert response.status_code in (200, 400)
+    if response.status_code == 200:
+        assert _schedule_rows(response) == []
+
+def test_t1_r02_37_large_number_of_staff_entries(client, login, dashboard_test_data_factory):
+    """A 100-row schedule is fully returned without an HTTP error."""
+    test_data, response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory, row_count=100
+    )
+
+    # Django's test client checks the rendered data, not browser layout at a viewport.
+    assert response.status_code == 200
+    expected_rows = test_data["schedule_rows"]
+    actual_rows = _schedule_rows(response)
+    assert len(expected_rows) >= 100
+    assert _normalized_rows(actual_rows) == _normalized_rows(expected_rows)
+
+def test_t1_r02_38_rapidly_switch_between_wards(
+    client, login, dashboard_test_data_factory
+):
+    """Successive HTTP requests return matching schedules; browser races are not tested."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    ward_ids = test_data["ward_ids"]
+
+    first_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[0]})
+    second_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[1]})
+    final_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[0]})
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert final_response.status_code == 200
+    for response, selected_ward in (
+        (first_response, ward_ids[0]),
+        (second_response, ward_ids[1]),
+        (final_response, ward_ids[0]),
+    ):
+        expected_rows = [
+            row for row in test_data["schedule_rows"]
+            if row["ward_id"] == selected_ward
+        ]
+        assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(
+            expected_rows
+        )
+
+def test_t1_r02_39_refresh_dashboard_with_filter(
+    client, login, dashboard_test_data_factory
+):
+    """Refreshing while a filter is active does not show unrelated data."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    selected_ward = test_data["ward_ids"][0]
+    period_start = _as_date(test_data["week_start"])
+    filters = {
+        "ward_id": selected_ward,
+        "period_start": period_start.isoformat(),
+        "period_type": "week",
+    }
+
+    first_response = client.get(ADMIN_DASHBOARD_URL, filters)
+    refreshed_response = client.get(ADMIN_DASHBOARD_URL, filters)
+
+    assert first_response.status_code == 200
+    assert refreshed_response.status_code == 200
+    first_rows = _schedule_rows(first_response)
+    refreshed_rows = _schedule_rows(refreshed_response)
+    expected_rows = [
+        row for row in test_data["schedule_rows"]
+        if str(row["ward_id"]) == str(selected_ward)
+        and row in _rows_for_period(test_data["schedule_rows"], period_start, "week")
+    ]
+    assert _normalized_rows(first_rows) == _normalized_rows(expected_rows)
+    assert _normalized_rows(refreshed_rows) == _normalized_rows(expected_rows)
+
+def test_t1_r02_40_dashboard_staff_match_roster(
+    client, login, dashboard_test_data_factory
+):
+    """Staff identifiers shown on the dashboard match roster records."""
+    test_data, response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    expected_staff_ids = sorted(str(row["staff_id"]) for row in test_data["schedule_rows"])
+
+    assert sorted(str(row["staff_id"]) for row in _schedule_rows(response)) == expected_staff_ids
+
+def test_t1_r02_41_dashboard_dates_and_shifts_match_roster(
+    client, login, dashboard_test_data_factory
+):
+    """Dashboard dates and shifts match the roster records."""
+    test_data, response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    expected_date_shifts = sorted(
+        (
+            str(row["staff_id"]),
+            str(row["ward_id"]),
+            _as_date(row["shift_date"]).isoformat(),
+            str(row["shift_name"]),
+        )
+        for row in test_data["schedule_rows"]
+    )
+    actual_date_shifts = sorted(
+        (
+            str(row["staff_id"]),
+            str(row["ward_id"]),
+            _as_date(row["shift_date"]).isoformat(),
+            str(row["shift_name"]),
+        )
+        for row in _schedule_rows(response)
+    )
+
+    assert actual_date_shifts == expected_date_shifts
+
+def test_t1_r02_42_selected_ward_excludes_unrelated_staff(
+    client, login, dashboard_test_data_factory
+):
+    """Ward-specific filtering excludes staff from unrelated wards."""
+    test_data, _ = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+    selected_ward = test_data["ward_ids"][0]
+
+    response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": selected_ward})
+
+    assert response.status_code == 200
+    expected_rows = [
+        row for row in test_data["schedule_rows"]
+        if row["ward_id"] == selected_ward
+    ]
+    assert _normalized_rows(_schedule_rows(response)) == _normalized_rows(expected_rows)
+
+def test_t1_r02_43_dashboard_schedule_counts_match_roster(
+    client, login, dashboard_test_data_factory
+):
+    """Dashboard shift counts per ward match the roster records."""
+    test_data, response = _admin_dashboard_with_data(
+        client, login, dashboard_test_data_factory
+    )
+
+    def counts_by_ward(rows):
+        counts = {}
+        for row in rows:
+            ward_id = str(row["ward_id"])
+            counts[ward_id] = counts.get(ward_id, 0) + 1
+        return counts
+
+    assert counts_by_ward(_schedule_rows(response)) == counts_by_ward(
+        test_data["schedule_rows"]
+    )
