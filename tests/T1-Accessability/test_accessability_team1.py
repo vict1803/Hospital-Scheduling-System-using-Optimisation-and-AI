@@ -760,3 +760,341 @@ def test_t1_r02_43_dashboard_schedule_counts_match_roster(
     assert counts_by_ward(_schedule_rows(response)) == counts_by_ward(
         test_data["schedule_rows"]
     )
+
+
+# ==========================================================
+# R03 - Individual Staff Schedule
+# ==========================================================
+
+STAFF_SCHEDULE_ROW_FIELDS = {
+    "staff_id",
+    "shift_date",
+    "shift_name",
+    "start_time",
+    "end_time",
+}
+
+
+def _staff_schedule(client, login, params=None, method="get"):
+    login_response = login("staff")
+    assert login_response.status_code == 302
+    request = getattr(client, method)
+    return request(STAFF_SCHEDULE_URL, params or {})
+
+
+def _staff_schedule_rows(response):
+    assert response.context is not None, "Staff schedule must expose its template context."
+    assert "schedule_rows" in response.context
+    rows = response.context["schedule_rows"]
+    assert isinstance(rows, list)
+    for row in rows:
+        assert isinstance(row, Mapping)
+        assert STAFF_SCHEDULE_ROW_FIELDS <= row.keys()
+    return rows
+
+
+def _staff_rows_for_week(rows, week_start):
+    week_start = _as_date(week_start)
+    return [
+        row for row in rows
+        if week_start <= _as_date(row["shift_date"]) < week_start + timedelta(days=7)
+    ]
+
+
+def _current_week_start():
+    today = date.today()
+    return today - timedelta(days=today.weekday())
+
+
+def _assert_only_logged_in_staff(rows, users, django_user_model):
+    staff_user = django_user_model.objects.get(username=users["staff"][0])
+    assert all(str(row["staff_id"]) == str(staff_user.pk) for row in rows)
+
+
+def test_t1_r03_44_staff_opens_own_schedule(client, login, users, django_user_model):
+    """A staff member can open a schedule containing only their own shifts."""
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    _assert_only_logged_in_staff(rows, users, django_user_model)
+
+
+def test_t1_r03_45_staff_views_current_week(client, login):
+    """The schedule for the current week contains only current-week shifts."""
+    week_start = _current_week_start()
+    response = _staff_schedule(
+        client,
+        login,
+        {"period_start": week_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    assert rows == _staff_rows_for_week(rows, week_start)
+
+
+def test_t1_r03_46_staff_selects_another_period(client, login):
+    """Selecting another scheduling period displays shifts from that period."""
+    week_start = _current_week_start() + timedelta(days=7)
+    response = _staff_schedule(
+        client,
+        login,
+        {"period_start": week_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    assert rows == _staff_rows_for_week(rows, week_start)
+
+
+def test_t1_r03_47_staff_with_no_assigned_shifts_sees_empty_state(client, login):
+    """A staff member without assigned shifts sees an empty schedule."""
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    assert _staff_schedule_rows(response) == []
+
+
+def test_t1_r03_48_open_schedule_from_navigation(client, login):
+    """The staff navigation menu links to the individual schedule."""
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    assert f'href="{STAFF_SCHEDULE_URL}"'.encode() in response.content
+
+
+def test_t1_r03_49_staff_selects_a_different_week(client, login):
+    """Selecting a different week updates the displayed schedule."""
+    week_start = _current_week_start() - timedelta(days=7)
+    response = _staff_schedule(
+        client,
+        login,
+        {"period_start": week_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    assert rows == _staff_rows_for_week(rows, week_start)
+
+
+def test_t1_r03_50_shift_dates_times_and_types_are_displayed(client, login):
+    """Each displayed shift includes its date, start/end times, and shift type."""
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    for row in rows:
+        _as_date(row["shift_date"])
+        assert row["start_time"] is not None
+        assert row["end_time"] is not None
+        assert row["shift_name"]
+
+
+def test_t1_r03_51_refresh_preserves_schedule(client, login):
+    """Refreshing the staff schedule returns the same shift data."""
+    first_response = _staff_schedule(client, login)
+    refreshed_response = client.get(STAFF_SCHEDULE_URL)
+
+    assert first_response.status_code == 200
+    assert refreshed_response.status_code == 200
+    assert _staff_schedule_rows(refreshed_response) == _staff_schedule_rows(
+        first_response
+    )
+
+
+def test_t1_r03_52_navigate_back_and_forward_between_periods(client, login):
+    """Back/forward period requests return shifts for their requested weeks."""
+    current_week = _current_week_start()
+    previous_week = current_week - timedelta(days=7)
+    next_week = current_week + timedelta(days=7)
+    previous_response = _staff_schedule(
+        client,
+        login,
+        {"period_start": previous_week.isoformat(), "period_type": "week"},
+    )
+    next_response = client.get(
+        STAFF_SCHEDULE_URL,
+        {"period_start": next_week.isoformat(), "period_type": "week"},
+    )
+
+    assert previous_response.status_code == 200
+    assert next_response.status_code == 200
+    previous_rows = _staff_schedule_rows(previous_response)
+    next_rows = _staff_schedule_rows(next_response)
+    assert previous_rows
+    assert next_rows
+    assert previous_rows == _staff_rows_for_week(previous_rows, previous_week)
+    assert next_rows == _staff_rows_for_week(next_rows, next_week)
+
+
+def test_t1_r03_53_selected_week_without_shifts_shows_empty_state(client, login):
+    """A week with no shifts is represented as an empty schedule."""
+    empty_week = _current_week_start() + timedelta(days=7 * 52)
+    response = _staff_schedule(
+        client,
+        login,
+        {"period_start": empty_week.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    assert _staff_schedule_rows(response) == []
+
+
+def test_t1_r03_54_period_outside_roster_range_is_handled(client, login):
+    """A period well beyond the roster range does not return unrelated shifts."""
+    outside_period = date.today() + timedelta(days=365 * 10)
+    week_start = outside_period - timedelta(days=outside_period.weekday())
+    response = _staff_schedule(
+        client,
+        login,
+        {"period_start": week_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    assert _staff_schedule_rows(response) == []
+
+
+def test_t1_r03_55_url_cannot_expose_another_staff_schedule(
+    client, login, users, django_user_model
+):
+    """Changing the staff_id URL parameter cannot expose another staff member's shifts."""
+    other_staff = django_user_model.objects.create_user(
+        username="nurse2", password="Other-staff-pass"
+    )
+    response = _staff_schedule(
+        client, login, {"staff_id": other_staff.pk}
+    )
+
+    assert response.status_code in (200, 403, 404)
+    if response.status_code == 200:
+        _assert_only_logged_in_staff(
+            _staff_schedule_rows(response), users, django_user_model
+        )
+
+
+def test_t1_r03_56_manipulated_request_cannot_expose_another_staff_schedule(
+    client, login, users, django_user_model
+):
+    """A forged POST parameter cannot expose another staff member's shifts."""
+    other_staff = django_user_model.objects.create_user(
+        username="nurse2", password="Other-staff-pass"
+    )
+    response = _staff_schedule(
+        client, login, {"staff_id": other_staff.pk}, method="post"
+    )
+
+    assert response.status_code in (200, 403, 404)
+    if response.status_code == 200:
+        _assert_only_logged_in_staff(
+            _staff_schedule_rows(response), users, django_user_model
+        )
+
+
+def test_t1_r03_57_expired_session_requires_reauthentication(client, login):
+    """An expired session cannot continue displaying the staff schedule."""
+    assert login("staff").status_code == 302
+    session = client.session
+    session.set_expiry(-1)
+    session.save()
+
+    response = client.get(STAFF_SCHEDULE_URL)
+
+    assert response.status_code == 302
+    assert response["Location"].split("?")[0] == LOGIN_URL
+
+
+def test_t1_r03_58_repeated_period_changes_do_not_show_stale_shifts(client, login):
+    """Repeatedly changing periods returns rows belonging to each requested week."""
+    current_week = _current_week_start()
+    periods = [
+        current_week,
+        current_week + timedelta(days=7),
+        current_week - timedelta(days=7),
+    ]
+
+    for week_start in periods:
+        response = client.get(
+            STAFF_SCHEDULE_URL,
+            {"period_start": week_start.isoformat(), "period_type": "week"},
+        )
+
+        assert response.status_code == 200
+        rows = _staff_schedule_rows(response)
+        assert rows
+        assert rows == _staff_rows_for_week(rows, week_start)
+
+
+def test_t1_r03_59_individual_schedule_matches_master_roster(
+    client, login, users, django_user_model, dashboard_test_data_factory
+):
+    """The staff schedule contains exactly their shifts from the master roster."""
+    test_data = dashboard_test_data_factory()
+    staff_user = django_user_model.objects.get(username=users["staff"][0])
+    expected_rows = [
+        row for row in test_data["schedule_rows"]
+        if str(row["staff_id"]) == str(staff_user.pk)
+    ]
+
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    assert _normalized_rows(_staff_schedule_rows(response)) == _normalized_rows(
+        expected_rows
+    )
+
+
+def test_t1_r03_60_only_logged_in_staff_id_is_displayed(
+    client, login, users, django_user_model
+):
+    """Every schedule row belongs to the authenticated staff account."""
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    _assert_only_logged_in_staff(rows, users, django_user_model)
+
+
+def test_t1_r03_61_displayed_shift_dates_and_times_are_valid(client, login):
+    """Shift dates and times are present and parse as valid values."""
+    from datetime import time
+
+    response = _staff_schedule(client, login)
+
+    assert response.status_code == 200
+    rows = _staff_schedule_rows(response)
+    assert rows
+    for row in rows:
+        _as_date(row["shift_date"])
+        time.fromisoformat(str(row["start_time"]))
+        time.fromisoformat(str(row["end_time"]))
+
+
+def test_t1_r03_62_schedule_reflects_administrator_roster_changes(
+    client, login, users, django_user_model, dashboard_test_data_factory
+):
+    """The staff schedule reflects the current master roster after an admin update."""
+    test_data = dashboard_test_data_factory()
+    staff_user = django_user_model.objects.get(username=users["staff"][0])
+    expected_rows = [
+        row for row in test_data["schedule_rows"]
+        if str(row["staff_id"]) == str(staff_user.pk)
+    ]
+    _login_admin(login)
+    admin_response = client.post(ADMIN_ACTION_URL, {"action": "update"})
+    assert admin_response.status_code in (200, 302)
+
+    staff_login = login("staff")
+    assert staff_login.status_code == 302
+    response = client.get(STAFF_SCHEDULE_URL)
+
+    assert response.status_code == 200
+    assert _normalized_rows(_staff_schedule_rows(response)) == _normalized_rows(
+        expected_rows
+    )
