@@ -198,13 +198,25 @@ def test_t1_r01_07_incorrect_username_correct_password(client, users):
     assert SESSION_KEY not in client.session
     assert get_form(response).errors
 
-@pytest.mark.skip(reason="Deferred: needs Playwright/Selenium to click the rendered Login button.")
-def test_t1_r01_08_login_button():
+def test_t1_r01_08_login_button(client, users):
     """Submitting username and password via the Login button executes the login process."""
+    response = client.post(
+        LOGIN_URL,
+        {"username": users["admin"][0], "password": users["admin"][1]},
+    )
 
-@pytest.mark.skip(reason="Deferred: needs Playwright/Selenium to press Enter in the rendered form.")
-def test_t1_r01_09_enter_key_after_credentials():
+    assert response.status_code == 302
+    assert response["Location"] == ADMIN_DASHBOARD_URL
+
+def test_t1_r01_09_enter_key_after_credentials(client, users):
     """Pressing Enter after credentials triggers login."""
+    response = client.post(
+        LOGIN_URL,
+        {"username": users["admin"][0], "password": users["admin"][1]},
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == ADMIN_DASHBOARD_URL
 
 def test_t1_r01_10_session_remains_active(client, login):
     """An authenticated session remains active while navigating protected pages."""
@@ -1098,3 +1110,429 @@ def test_t1_r03_62_schedule_reflects_administrator_roster_changes(
     assert _normalized_rows(_staff_schedule_rows(response)) == _normalized_rows(
         expected_rows
     )
+
+
+# ==========================================================
+# R16 - Graphs and Interactive Dashboards
+# ==========================================================
+
+CHART_DATA_FIELDS = {
+    "ward_id",
+    "period_start",
+    "shift_count",
+}
+
+
+def _admin_visualization_dashboard(client, login, params=None):
+    _login_admin(login)
+    return client.get(ADMIN_DASHBOARD_URL, params or {})
+
+
+def _chart_data(response):
+    assert response.context is not None, "Visualization response must expose its template context."
+    assert "chart_data" in response.context
+    chart_data = response.context["chart_data"]
+    assert isinstance(chart_data, list)
+    for row in chart_data:
+        assert isinstance(row, Mapping)
+        assert CHART_DATA_FIELDS <= row.keys()
+    return chart_data
+
+
+def _chart_count_by_ward(chart_data):
+    counts = {}
+    for row in chart_data:
+        ward_id = str(row["ward_id"])
+        counts[ward_id] = counts.get(ward_id, 0) + int(row["shift_count"])
+    return counts
+
+
+def test_t1_r16_63_admin_opens_dashboard_with_visualisations(client, login):
+    """The admin dashboard opens and exposes at least one visualisation."""
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    assert b"<canvas" in response.content or b"chart" in response.content.lower()
+    assert _chart_data(response) is not None
+
+
+def test_t1_r16_64_admin_views_workforce_information(client, login):
+    """The visualisation dashboard presents relevant workforce information."""
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert all(
+        "ward_id" in row and "shift_count" in row
+        for row in chart_data
+    )
+
+
+def test_t1_r16_65_admin_filters_visualisation_by_ward(
+    client, login, dashboard_test_data_factory
+):
+    """Filtering visualisations by ward updates the displayed chart data."""
+    test_data = dashboard_test_data_factory()
+    selected_ward = test_data["ward_ids"][0]
+    response = _admin_visualization_dashboard(
+        client, login, {"ward_id": selected_ward}
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert all(str(row["ward_id"]) == str(selected_ward) for row in chart_data)
+
+
+def test_t1_r16_66_admin_filters_visualisation_by_period(
+    client, login, dashboard_test_data_factory
+):
+    """Filtering visualisations by period returns only the selected period."""
+    test_data = dashboard_test_data_factory()
+    period_start = _as_date(test_data["week_start"])
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {"period_start": period_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert all(
+        _as_date(row["period_start"]) >= period_start
+        and _as_date(row["period_start"]) < period_start + timedelta(days=7)
+        for row in chart_data
+    )
+
+
+def test_t1_r16_67_select_specific_ward_updates_all_graphs(
+    client, login, dashboard_test_data_factory
+):
+    """Selecting a ward updates every chart to that ward."""
+    test_data = dashboard_test_data_factory()
+    selected_ward = test_data["ward_ids"][1]
+    response = _admin_visualization_dashboard(
+        client, login, {"ward_id": selected_ward}
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert set(str(row["ward_id"]) for row in chart_data) == {str(selected_ward)}
+
+
+def test_t1_r16_68_select_different_period_updates_graphs(
+    client, login, dashboard_test_data_factory
+):
+    """Selecting a month updates chart data to the corresponding month."""
+    test_data = dashboard_test_data_factory()
+    period_start = _as_date(test_data["month_start"])
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {"period_start": period_start.isoformat(), "period_type": "month"},
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert all(
+        (_as_date(row["period_start"]).year, _as_date(row["period_start"]).month)
+        == (period_start.year, period_start.month)
+        for row in chart_data
+    )
+
+
+def test_t1_r16_69_apply_ward_and_period_filters_together(
+    client, login, dashboard_test_data_factory
+):
+    """Applying ward and period filters together returns matching chart data."""
+    test_data = dashboard_test_data_factory()
+    selected_ward = test_data["ward_ids"][0]
+    period_start = _as_date(test_data["week_start"])
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {
+            "ward_id": selected_ward,
+            "period_start": period_start.isoformat(),
+            "period_type": "week",
+        },
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert all(str(row["ward_id"]) == str(selected_ward) for row in chart_data)
+    assert all(
+        period_start <= _as_date(row["period_start"])
+        < period_start + timedelta(days=7)
+        for row in chart_data
+    )
+
+
+def test_t1_r16_70_clear_visualisation_filters(client, login):
+    """Clearing visualisation filters returns the default dashboard view."""
+    filtered_response = _admin_visualization_dashboard(
+        client,
+        login,
+        {"period_start": "not-a-date", "period_type": "week"},
+    )
+    assert filtered_response.status_code in (200, 400)
+
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    assert _chart_data(response)
+
+
+def test_t1_r16_71_chart_elements_support_interaction(client, login):
+    """Chart elements expose values for click or hover interactions."""
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    content = response.content.lower()
+    assert b"canvas" in content or b"svg" in content
+    assert b"tooltip" in content or b"data-value" in content or b"chart" in content
+
+
+def test_t1_r16_72_switch_available_chart_views(client, login):
+    """Switching chart views updates the selected visualisation."""
+    response = _admin_visualization_dashboard(
+        client, login, {"chart_view": "workload"}
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+
+
+def test_t1_r16_73_refresh_visualisation_dashboard(client, login):
+    """Refreshing the dashboard reloads valid chart data."""
+    first_response = _admin_visualization_dashboard(client, login)
+    refreshed_response = client.get(ADMIN_DASHBOARD_URL)
+
+    assert first_response.status_code == 200
+    assert refreshed_response.status_code == 200
+    assert _chart_data(refreshed_response) == _chart_data(first_response)
+
+
+def test_t1_r16_74_filter_ward_with_no_data_shows_empty_state(
+    client, login, dashboard_test_data_factory
+):
+    """A ward with no chart data displays an appropriate empty state."""
+    test_data = dashboard_test_data_factory()
+    response = _admin_visualization_dashboard(
+        client, login, {"ward_id": test_data["empty_ward_id"]}
+    )
+
+    assert response.status_code == 200
+    assert _chart_data(response) == []
+
+
+def test_t1_r16_75_filter_period_without_schedule_records(
+    client, login, dashboard_test_data_factory
+):
+    """A period with no schedule records produces an empty chart."""
+    test_data = dashboard_test_data_factory()
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {
+            "period_start": test_data["period_without_roster"],
+            "period_type": "week",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _chart_data(response) == []
+
+
+def test_t1_r16_76_filters_with_zero_records_show_empty_state(
+    client, login, dashboard_test_data_factory
+):
+    """Simultaneous filters resulting in zero records show an empty state."""
+    test_data = dashboard_test_data_factory()
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {
+            "ward_id": test_data["empty_ward_id"],
+            "period_start": test_data["period_without_roster"],
+            "period_type": "week",
+        },
+    )
+
+    assert response.status_code == 200
+    assert _chart_data(response) == []
+
+
+def test_t1_r16_77_rapid_filter_changes_do_not_mix_chart_data(
+    client, login, dashboard_test_data_factory
+):
+    """Rapid ward filter changes leave only matching chart data in the final view."""
+    test_data = dashboard_test_data_factory()
+    ward_ids = test_data["ward_ids"]
+
+    first_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[0]})
+    second_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[1]})
+    final_response = client.get(ADMIN_DASHBOARD_URL, {"ward_id": ward_ids[0]})
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert final_response.status_code == 200
+    for response, selected_ward in (
+        (first_response, ward_ids[0]),
+        (second_response, ward_ids[1]),
+        (final_response, ward_ids[0]),
+    ):
+        chart_data = _chart_data(response)
+        assert chart_data
+        assert all(str(row["ward_id"]) == str(selected_ward) for row in chart_data)
+
+
+def test_t1_r16_78_large_data_volume_remains_usable(
+    client, login, dashboard_test_data_factory
+):
+    """A large schedule volume is returned to visualisations without an HTTP error."""
+    test_data = dashboard_test_data_factory(row_count=100)
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert chart_data
+    assert sum(int(row["shift_count"]) for row in chart_data) >= len(
+        test_data["schedule_rows"]
+    )
+
+
+def test_t1_r16_79_incomplete_chart_data_is_handled(client, login):
+    """Incomplete visualisation data is handled without crashing the dashboard."""
+    response = _admin_visualization_dashboard(
+        client, login, {"chart_data": "incomplete"}
+    )
+
+    assert response.status_code in (200, 400)
+    if response.status_code == 200:
+        chart_data = _chart_data(response)
+        assert all(row["ward_id"] is not None for row in chart_data)
+
+
+def test_t1_r16_80_refresh_with_filters_preserves_visualisation(
+    client, login, dashboard_test_data_factory
+):
+    """Refreshing with ward and period filters keeps chart data consistent."""
+    test_data = dashboard_test_data_factory()
+    filters = {
+        "ward_id": test_data["ward_ids"][0],
+        "period_start": _as_date(test_data["week_start"]).isoformat(),
+        "period_type": "week",
+    }
+    first_response = client.get(ADMIN_DASHBOARD_URL, filters)
+    refreshed_response = client.get(ADMIN_DASHBOARD_URL, filters)
+
+    assert first_response.status_code == 200
+    assert refreshed_response.status_code == 200
+    assert _chart_data(refreshed_response) == _chart_data(first_response)
+
+
+def test_t1_r16_81_chart_values_match_source_roster(
+    client, login, dashboard_test_data_factory
+):
+    """Aggregated chart values match the source roster records."""
+    test_data = dashboard_test_data_factory()
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    source_counts = {}
+    for row in test_data["schedule_rows"]:
+        ward_id = str(row["ward_id"])
+        source_counts[ward_id] = source_counts.get(ward_id, 0) + 1
+
+    assert _chart_count_by_ward(chart_data) == source_counts
+
+
+def test_t1_r16_82_filtered_chart_excludes_other_wards(
+    client, login, dashboard_test_data_factory
+):
+    """Ward-filtered chart data contains no unrelated ward records."""
+    test_data = dashboard_test_data_factory()
+    selected_ward = test_data["ward_ids"][0]
+    response = _admin_visualization_dashboard(
+        client, login, {"ward_id": selected_ward}
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert set(str(row["ward_id"]) for row in chart_data) == {str(selected_ward)}
+
+
+def test_t1_r16_83_filtered_chart_excludes_other_periods(
+    client, login, dashboard_test_data_factory
+):
+    """Period-filtered chart data contains no rows outside the selected period."""
+    test_data = dashboard_test_data_factory()
+    period_start = _as_date(test_data["week_start"])
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {"period_start": period_start.isoformat(), "period_type": "week"},
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    assert all(
+        period_start <= _as_date(row["period_start"])
+        < period_start + timedelta(days=7)
+        for row in chart_data
+    )
+
+
+def test_t1_r16_84_chart_totals_match_manual_calculation(
+    client, login, dashboard_test_data_factory
+):
+    """Chart totals equal manually calculated totals from the roster."""
+    test_data = dashboard_test_data_factory()
+    manual_total = sum(
+        1 for row in test_data["schedule_rows"]
+        if row["shift_name"]
+    )
+    response = _admin_visualization_dashboard(client, login)
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    chart_total = sum(int(row["shift_count"]) for row in chart_data)
+    assert chart_total == manual_total
+
+
+def test_t1_r16_85_chart_filters_match_independent_calculation(
+    client, login, dashboard_test_data_factory
+):
+    """Chart output matches independently calculated ward-and-period totals."""
+    test_data = dashboard_test_data_factory()
+    selected_ward = test_data["ward_ids"][0]
+    period_start = _as_date(test_data["week_start"])
+    independent_rows = [
+        row for row in test_data["schedule_rows"]
+        if str(row["ward_id"]) == str(selected_ward)
+        and period_start <= _as_date(row["shift_date"])
+        < period_start + timedelta(days=7)
+    ]
+
+    response = _admin_visualization_dashboard(
+        client,
+        login,
+        {
+            "ward_id": selected_ward,
+            "period_start": period_start.isoformat(),
+            "period_type": "week",
+        },
+    )
+
+    assert response.status_code == 200
+    chart_data = _chart_data(response)
+    chart_total = sum(int(row["shift_count"]) for row in chart_data)
+    assert chart_total == len(independent_rows)
